@@ -1,108 +1,109 @@
 pipeline {
     agent any
+
     tools {
         jdk 'jdk17'
-        nodejs 'node23'
+        nodejs 'node18'
     }
+
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        SCANNER_HOME = tool 'sonar-scanner'
     }
+
     stages {
-        stage ("clean workspace") {
-            steps {
-                cleanWs()
-            }
+
+        stage('Clean Workspace') {
+            steps { cleanWs() }
         }
-        stage ("Git Checkout") {
-            steps {
-                git 'https://github.com/KastroVKiran/Zomato-Project-Kastro.git'
-            }
+
+        stage('Git Checkout') {
+            steps { git branch: 'main', url: 'https://github.com/nagarjuna-kandul/FoodAppZomato.git' }
         }
-        stage("Sonarqube Analysis"){
-            steps{
+
+        stage('SonarQube Analysis') {
+            steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato '''
+                    sh """
+                    $SCANNER_HOME/bin/sonar-scanner \
+                    -Dsonar.projectName=zomato \
+                    -Dsonar.projectKey=zomato-${env.JOB_NAME}
+                    """
                 }
             }
         }
-        stage("Code Quality Gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
-                }
-            } 
-        }
-        stage("Install NPM Dependencies") {
+
+        stage('Code Quality Gate') {
             steps {
-                sh "npm install"
+                script { waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' }
             }
         }
-        stage('OWASP FS SCAN') {
+
+        stage('Install NPM Dependencies') {
+            steps { sh 'npm ci' }
+        }
+
+        stage('OWASP Dependency Check') {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit',
+                                odcInstallation: 'DP-Check'
                 dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-    }
-}
-        stage ("Trivy File Scan") {
-            steps {
-                sh "trivy fs . > trivy.txt"
             }
         }
-        stage ("Build Docker Image") {
-            steps {
-                sh "docker build -t zomato ."
-            }
+
+        stage('Trivy File Scan') {
+            steps { sh 'trivy fs . > trivy.txt' }
         }
-        stage ("Tag & Push to DockerHub") {
+
+        stage('Build Docker Image') {
+            steps { sh 'docker build -t zomato .' }
+        }
+
+        stage('Tag & Push to DockerHub') {
             steps {
                 script {
                     withDockerRegistry(credentialsId: 'docker') {
-                        sh "docker tag zomato kastrov/zomato:latest "
-                        sh "docker push kastrov/zomato:latest "
+                        sh '''
+                        docker tag zomato nagarjuna1993/zomato:latest
+                        docker push nagarjuna1993/zomato:latest
+                        '''
                     }
                 }
             }
         }
-        stage('Docker Scout Image') {
-            steps {
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh 'docker-scout quickview kastrov/zomato:latest'
-                       sh 'docker-scout cves kastrov/zomato:latest'
-                       sh 'docker-scout recommendations kastrov/zomato:latest'
-                   }
-                }
-            }
+
+        stage('Trivy Docker Image Scan') {
+            steps { sh 'trivy image --severity HIGH,CRITICAL nagarjuna1993/zomato:latest > trivy-image.txt' }
         }
-        stage ("Deploy to Container") {
+
+        stage('Deploy to Container') {
             steps {
-                sh 'docker run -d --name zomato -p 3000:3000 kastrov/zomato:latest'
+                sh '''
+                docker rm -f zomato || true
+                docker run -d --name zomato -p 3000:3000 nagarjuna1993/zomato:latest
+                '''
             }
         }
     }
+
     post {
-    always {
-        emailext attachLog: true,
-            subject: "'${currentBuild.result}'",
-            body: """
+        always {
+            emailext(
+                attachLog: true,
+                subject: "${currentBuild.result}",
+                to: 'nagarjunareddy55511@gmail.com',
+                mimeType: 'text/html',
+                attachmentsPattern: 'trivy.txt,trivy-image.txt',
+                body: """
                 <html>
                 <body>
-                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                    </div>
-                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                    </div>
-                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                    </div>
+                    <h2>Jenkins Build Notification</h2>
+                    <p><b>Project:</b> ${env.JOB_NAME}</p>
+                    <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
+                    <p><b>Build URL:</b> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                 </body>
                 </html>
-            """,
-            to: 'kastrokiran@gmail.com',
-            mimeType: 'text/html',
-            attachmentsPattern: 'trivy.txt'
+                """
+            )
         }
     }
 }
